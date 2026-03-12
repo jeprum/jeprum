@@ -56,4 +56,4 @@ Built by [Jithendra Puppala](https://linkedin.com/in/jithendra-siddartha), MS CS
 ## Get in Touch
 
 - **Email:** jithendra.mail.me@gmail.com
-- **LinkedIn:** [linkedin.com/in/jithendrapuppala](https://linkedin.com/in/jithendra-siddartha)
+- **LinkedIn:** [linkedin.com/in/jithendra-siddartha](https://linkedin.com/in/jithendra-siddartha)
