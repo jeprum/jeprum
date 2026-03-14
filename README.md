@@ -1,6 +1,6 @@
 # Jeprum
 
-**The Agent Control Plane - route, monitor, and govern AI agents before they cost you money or break things.**
+**Live control room for AI agents - route, monitor, and govern AI agents before they cost you money or break things.**
 
 ---
 
