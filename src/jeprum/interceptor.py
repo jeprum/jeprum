@@ -16,7 +16,7 @@ from typing import Any
 from jeprum.exceptions import AgentKilled, AgentPaused, GuardrailViolation
 from jeprum.models import AgentConfig, AgentEvent, AgentStatus
 from jeprum.rules import RuleEngine
-from jeprum.transport import LocalTransport, create_transport
+from jeprum.transport import CloudTransport, ComboTransport, LocalTransport, create_transport
 
 logger = logging.getLogger("jeprum.interceptor")
 
@@ -63,7 +63,8 @@ class JeprumInterceptor:
         if not self._enabled:
             return await self._session.call_tool(name, arguments)
 
-        # 1. Check kill/pause status
+        # 1. Check kill/pause status (local + remote)
+        self._sync_remote_status()
         if self._status.status == "killed":
             raise AgentKilled(self._config.agent_id)
         if self._status.status == "paused":
@@ -162,6 +163,18 @@ class JeprumInterceptor:
             await self._transport.ship(event)
         except Exception as exc:
             logger.warning("Failed to ship event: %s", exc)
+
+    def _sync_remote_status(self) -> None:
+        """Check remote status from cloud transport and update local status."""
+        if isinstance(self._transport, (CloudTransport, ComboTransport)):
+            remote = self._transport.remote_status
+            if remote in ("killed", "paused") and self._status.status == "active":
+                self._status.status = remote
+                logger.info(
+                    "Agent '%s' status synced from cloud: %s",
+                    self._config.agent_id,
+                    remote,
+                )
 
     @staticmethod
     def _safe_serialize(obj: Any) -> Any:

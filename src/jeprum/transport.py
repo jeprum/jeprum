@@ -64,6 +64,7 @@ class CloudTransport:
 
     Events are queued in memory and flushed periodically or when the
     queue reaches batch_size. HTTP failures are logged but never raised.
+    Also polls the cloud for agent status (kill/pause) on a configurable interval.
     """
 
     def __init__(
@@ -72,18 +73,29 @@ class CloudTransport:
         api_key: str,
         batch_size: int = 10,
         batch_interval: float = 2.0,
+        agent_id: str = "",
+        poll_interval: float = 10.0,
     ) -> None:
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
         self._batch_size = batch_size
         self._batch_interval = batch_interval
+        self._agent_id = agent_id
+        self._poll_interval = poll_interval
         self._queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
         self._client: httpx.AsyncClient | None = None
         self._flush_task: asyncio.Task[None] | None = None
+        self._poll_task: asyncio.Task[None] | None = None
         self._closed = False
+        self._remote_status: str = "active"
+
+    @property
+    def remote_status(self) -> str:
+        """The latest status polled from the cloud (active/paused/killed)."""
+        return self._remote_status
 
     async def _ensure_started(self) -> None:
-        """Lazily start the HTTP client and background flush task."""
+        """Lazily start the HTTP client, flush task, and poll task."""
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(10.0),
@@ -94,6 +106,8 @@ class CloudTransport:
             )
         if self._flush_task is None:
             self._flush_task = asyncio.create_task(self._flush_loop())
+        if self._poll_task is None and self._agent_id:
+            self._poll_task = asyncio.create_task(self._poll_status_loop())
 
     async def ship(self, event: AgentEvent) -> None:
         """Add an event to the internal queue for batched shipping."""
@@ -132,7 +146,7 @@ class CloudTransport:
             return
 
         try:
-            payload = [e.model_dump(mode="json") for e in events]
+            payload = {"events": [e.model_dump(mode="json") for e in events]}
             if self._client is not None:
                 response = await self._client.post(
                     f"{self._endpoint}/api/v1/events",
@@ -156,15 +170,47 @@ class CloudTransport:
                 except Exception:
                     pass
 
+    async def _poll_status_loop(self) -> None:
+        """Background task that polls the cloud for agent status."""
+        while not self._closed:
+            try:
+                await asyncio.sleep(self._poll_interval)
+                await self._poll_status()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning("CloudTransport poll error: %s", exc)
+
+    async def _poll_status(self) -> None:
+        """Poll agent status from the cloud API. Fail-open on errors."""
+        if self._client is None or not self._agent_id:
+            return
+        try:
+            response = await self._client.get(
+                f"{self._endpoint}/api/v1/agents/{self._agent_id}/status",
+            )
+            if response.status_code == 200:
+                data = response.json()
+                new_status = data.get("status", "active")
+                if new_status != self._remote_status:
+                    logger.info(
+                        "Agent '%s' remote status changed: %s -> %s",
+                        self._agent_id, self._remote_status, new_status,
+                    )
+                    self._remote_status = new_status
+        except Exception as exc:
+            logger.warning("Failed to poll agent status: %s", exc)
+
     async def close(self) -> None:
         """Flush remaining events and shut down."""
         self._closed = True
-        if self._flush_task is not None:
-            self._flush_task.cancel()
-            try:
-                await self._flush_task
-            except asyncio.CancelledError:
-                pass
+        for task in (self._flush_task, self._poll_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         # Final flush
         await self._flush()
         if self._client is not None:
@@ -180,6 +226,11 @@ class ComboTransport:
     def __init__(self, local: LocalTransport, cloud: CloudTransport) -> None:
         self._local = local
         self._cloud = cloud
+
+    @property
+    def remote_status(self) -> str:
+        """Proxy remote_status from the cloud transport."""
+        return self._cloud.remote_status
 
     async def ship(self, event: AgentEvent) -> None:
         """Ship to both transports. Failures in one don't affect the other."""
@@ -224,6 +275,8 @@ def create_transport(
             api_key=config.api_key,
             batch_size=config.batch_size,
             batch_interval=config.batch_interval_seconds,
+            agent_id=config.agent_id,
+            poll_interval=config.poll_interval_seconds,
         )
 
     if config.transport_mode == "both":
@@ -238,6 +291,8 @@ def create_transport(
             api_key=config.api_key,
             batch_size=config.batch_size,
             batch_interval=config.batch_interval_seconds,
+            agent_id=config.agent_id,
+            poll_interval=config.poll_interval_seconds,
         )
         return ComboTransport(local=local, cloud=cloud)
 
