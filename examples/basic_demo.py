@@ -1,23 +1,25 @@
-"""Jeprum SDK Demo — End-to-end demonstration of monitoring, guardrails, and kill switch.
+"""Jeprum SDK Demo — Full-stack demonstration: SDK → Cloud Backend → Dashboard.
 
-Run with: uv run python examples/basic_demo.py
+Run with:
+    JEPRUM_API_KEY=jp_live_xxx uv run python examples/basic_demo.py
 
-This demo uses a mock MCP session to simulate real agent tool calls,
-showing how Jeprum intercepts, monitors, and governs every action.
+Or for local-only (no cloud):
+    uv run python examples/basic_demo.py
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import sys
 from pathlib import Path
 from typing import Any
 
-from jeprum import Jeprum, GuardrailViolation, AgentKilled
+from jeprum import Jeprum, GuardrailViolation, AgentKilled, AgentPaused
 
 # ---------------------------------------------------------------------------
-# ANSI color codes (no extra dependency needed)
+# ANSI color codes
 # ---------------------------------------------------------------------------
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -27,91 +29,83 @@ BOLD = "\033[1m"
 DIM = "\033[2m"
 RESET = "\033[0m"
 
+DASHBOARD_URL = "https://jeprum-dashboard.vercel.app"
+CLOUD_ENDPOINT = "https://jeprum-cloud.onrender.com"
 
 # ---------------------------------------------------------------------------
-# Mock MCP Session — simulates a real MCP server with tools
+# Mock MCP Session
 # ---------------------------------------------------------------------------
 
 TOOL_COSTS: dict[str, float] = {
     "web_search": 0.012,
     "calculator": 0.005,
     "read_file": 0.008,
-    "send_email": 0.020,
+    "analyze_data": 0.020,
+    "send_notification": 0.030,
     "delete_file": 0.010,
     "get_weather": 0.007,
-    "translate_text": 0.015,
     "summarize": 0.025,
 }
 
 
 class MockMCPSession:
-    """Simulates an MCP ClientSession with mock tools and realistic latency."""
+    """Simulates an MCP ClientSession with realistic latency."""
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        # Simulate realistic API latency (50-200ms)
-        await asyncio.sleep(random.uniform(0.05, 0.20))
-
-        responses: dict[str, dict[str, Any]] = {
-            "web_search": {"results": [f"Result for '{arguments.get('query', '')}'"], "count": 3},
-            "calculator": {"result": eval(str(arguments.get("expression", "0")))},
-            "read_file": {"content": f"Contents of {arguments.get('path', 'unknown')}", "size": 1024},
-            "send_email": {"status": "sent", "to": arguments.get("to", ""), "id": "msg_abc123"},
-            "delete_file": {"status": "deleted", "path": arguments.get("path", "")},
-            "get_weather": {"temp": 72, "condition": "sunny", "city": arguments.get("city", "")},
-            "translate_text": {"translated": f"[translated] {arguments.get('text', '')}", "lang": arguments.get("to_lang", "")},
-            "summarize": {"summary": f"Summary of: {str(arguments.get('text', ''))[:50]}...", "tokens": 150},
-        }
-        return responses.get(name, {"status": "ok", "tool": name})
+        await asyncio.sleep(random.uniform(0.05, 0.30))
+        return {"status": "ok", "tool": name, "result": f"Result for {name}"}
 
     async def list_tools(self) -> list[dict[str, str]]:
-        return [{"name": name} for name in TOOL_COSTS]
+        return [{"name": n} for n in TOOL_COSTS]
 
 
 # ---------------------------------------------------------------------------
-# Demo script
+# Demo calls
 # ---------------------------------------------------------------------------
 
 DEMO_CALLS: list[tuple[str, dict[str, Any]]] = [
-    # Phase 1: Normal operations (green — passed)
+    # Phase 1: Normal operations (passed)
     ("web_search", {"query": "latest AI agent frameworks 2026"}),
     ("calculator", {"expression": "42 * 17 + 3"}),
     ("get_weather", {"city": "New York"}),
-    ("web_search", {"query": "MCP protocol specification"}),
-    ("read_file", {"path": "/tmp/config.yaml"}),
-    # Phase 2: Dangerous operation blocked by tool restriction (red)
+    # Phase 2: Analytics (passed, costs add up)
+    ("analyze_data", {"dataset": "agent_metrics_q1"}),
+    ("analyze_data", {"dataset": "cost_breakdown"}),
+    # Phase 3: Notification — triggers alert_on (warned)
+    ("send_notification", {"to": "team@example.com", "message": "Agent report ready"}),
+    # Phase 4: Dangerous operation — blocked by tool rule
     ("delete_file", {"path": "/etc/important.conf"}),
-    # Phase 3: More normal + alert triggers (yellow + green)
-    ("calculator", {"expression": "100 / 7"}),
-    ("translate_text", {"text": "Hello world", "to_lang": "es"}),
-    ("send_email", {"to": "team@example.com", "subject": "Agent report"}),
+    # Phase 5: More work, approaching spending limit
+    ("web_search", {"query": "MCP protocol specification"}),
+    ("summarize", {"text": "A long document about AI safety..."}),
+    ("read_file", {"path": "/tmp/config.yaml"}),
     ("web_search", {"query": "Python async best practices"}),
-    ("summarize", {"text": "A long document about AI safety and governance..."}),
-    ("get_weather", {"city": "San Francisco"}),
-    # Phase 4: Hit the spending limit (red — budget exceeded)
+    ("summarize", {"text": "Another document about governance..."}),
+    # Phase 6: Should hit spending limit
+    ("analyze_data", {"dataset": "final_report"}),
     ("web_search", {"query": "agent monitoring tools"}),
-    ("summarize", {"text": "Another document about MCP interceptors..."}),
-    ("translate_text", {"text": "Goodbye", "to_lang": "fr"}),
-    ("web_search", {"query": "how to build an SDK"}),
-    ("send_email", {"to": "boss@example.com", "subject": "Budget alert"}),
-    ("summarize", {"text": "Yet another long document for analysis..."}),
-    ("web_search", {"query": "real-time dashboards with React"}),
-    ("calculator", {"expression": "999 * 999"}),
+    ("summarize", {"text": "Yet another analysis document..."}),
 ]
 
 
-def print_header() -> None:
+def print_banner(api_key: str | None) -> None:
     print()
-    print(f"{BOLD}{CYAN}{'=' * 70}{RESET}")
-    print(f"{BOLD}{CYAN}  JEPRUM SDK DEMO — Live Agent Monitoring & Guardrails{RESET}")
-    print(f"{BOLD}{CYAN}{'=' * 70}{RESET}")
+    print(f"{BOLD}{CYAN}╔═══════════════════════════════════════════════════════╗{RESET}")
+    print(f"{BOLD}{CYAN}║           JEPRUM — Agent Control Plane                ║{RESET}")
+    print(f"{BOLD}{CYAN}║              Live Demo v0.1.0                         ║{RESET}")
+    print(f"{BOLD}{CYAN}╠═══════════════════════════════════════════════════════╣{RESET}")
+    if api_key:
+        print(f"{BOLD}{CYAN}║  Dashboard: {RESET}{DASHBOARD_URL:<41}{BOLD}{CYAN}║{RESET}")
+        print(f"{BOLD}{CYAN}║  Open the dashboard to watch events live!             ║{RESET}")
+    else:
+        print(f"{BOLD}{CYAN}║  Mode: Local only (set JEPRUM_API_KEY for cloud)      ║{RESET}")
+    print(f"{BOLD}{CYAN}╚═══════════════════════════════════════════════════════╝{RESET}")
     print()
-    print(f"{DIM}  Rules configured:{RESET}")
-    print(f"{DIM}    • Max spend per day: $0.10 (intentionally low for demo){RESET}")
-    print(f"{DIM}    • Blocked tools: delete_* (dangerous operations){RESET}")
-    print(f"{DIM}    • Alert on: send_* (flag sensitive actions){RESET}")
+    print(f"{DIM}  Guardrails:{RESET}")
+    print(f"{DIM}    • Max spend: $0.15/day  • Blocked: delete_*  • Alert: send_*, notify_*{RESET}")
     print()
     print(f"{BOLD}  Running {len(DEMO_CALLS)} agent tool calls...{RESET}")
-    print(f"{DIM}  {'─' * 66}{RESET}")
+    print(f"{DIM}  {'─' * 62}{RESET}")
     print()
 
 
@@ -123,163 +117,151 @@ def print_event(
     duration_ms: float,
     detail: str = "",
 ) -> None:
-    status_colors = {
-        "PASSED": GREEN,
-        "WARNED": YELLOW,
-        "BLOCKED": RED,
-    }
-    color = status_colors.get(status, RESET)
+    icons = {"PASSED": f"{GREEN}✅", "WARNED": f"{YELLOW}⚠️ ", "BLOCKED": f"{RED}🛑"}
+    icon = icons.get(status, "  ")
     cost_str = f"${cost:.3f}" if cost > 0 else "  —  "
-    dur_str = f"{duration_ms:6.1f}ms"
+    dur_str = f"{duration_ms:.0f}ms" if duration_ms > 0 else "  —"
     idx_str = f"[{index + 1:2d}/{len(DEMO_CALLS)}]"
+    color = {"PASSED": GREEN, "WARNED": YELLOW, "BLOCKED": RED}.get(status, RESET)
 
-    print(f"  {idx_str}  {color}{status:7s}{RESET}  {tool_name:20s}  {cost_str:>7s}  {dur_str}", end="")
+    print(f"  {idx_str} {icon} {color}{tool_name:20s}{RESET} {cost_str:>7s}  {dur_str:>6s}", end="")
     if detail:
         print(f"  {DIM}{detail}{RESET}", end="")
     print()
 
 
-def print_summary(passed: int, warned: int, blocked: int, total_cost: float, log_path: str) -> None:
+def print_summary(passed: int, warned: int, blocked: int, total_cost: float, mode: str) -> None:
     print()
-    print(f"{DIM}  {'─' * 66}{RESET}")
+    print(f"{DIM}  {'─' * 62}{RESET}")
     print()
-    print(f"{BOLD}  SUMMARY{RESET}")
-    print(f"  ├── Total calls attempted: {passed + warned + blocked}")
-    print(f"  ├── {GREEN}Passed:{RESET}  {passed}")
-    print(f"  ├── {YELLOW}Warned:{RESET}  {warned}")
-    print(f"  ├── {RED}Blocked:{RESET} {blocked}")
-    print(f"  └── Total cost: ${total_cost:.4f}")
+    print(f"{BOLD}  ═══ Demo Summary ═══{RESET}")
+    print(f"  Total events:     {passed + warned + blocked}")
+    print(f"  {GREEN}Passed:{RESET}           {passed}")
+    print(f"  {YELLOW}Warned:{RESET}           {warned}")
+    print(f"  {RED}Blocked:{RESET}          {blocked}")
+    print(f"  Total cost:       ${total_cost:.4f}")
     print()
-    print(f"{BOLD}  EVENT LOG{RESET}")
-    print(f"  └── {log_path}")
-    print()
-    print(f"{DIM}  Inspect with:{RESET}")
-    print(f"  cat {log_path} | python -m json.tool --json-lines | head -80")
-    print()
-    print(f"{BOLD}{CYAN}{'=' * 70}{RESET}")
-    print()
-
-
-class CostAwareMCPSession:
-    """Wraps MockMCPSession and injects estimated_cost_usd into the interceptor's
-    rule engine before each call, simulating cost-aware tool execution."""
-
-    def __init__(self, mock: MockMCPSession, interceptor: Any) -> None:
-        self._mock = mock
-        self._interceptor = interceptor
-
-    def pre_record_cost(self, tool_name: str) -> None:
-        """Record anticipated cost in the rule engine so spend limits work."""
-        cost = TOOL_COSTS.get(tool_name, 0.01)
-        from jeprum.models import AgentEvent as AE
-        evt = AE(
-            agent_id=self._interceptor._config.agent_id,
-            tool_name=tool_name,
-            estimated_cost_usd=cost,
-        )
-        # Only evaluate — don't record yet. We record after success.
-        result = self._interceptor._rule_engine.evaluate(evt)
-        return result, cost
-
-    def record_cost(self, tool_name: str, cost: float) -> None:
-        from jeprum.models import AgentEvent as AE
-        evt = AE(
-            agent_id=self._interceptor._config.agent_id,
-            tool_name=tool_name,
-            estimated_cost_usd=cost,
-        )
-        self._interceptor._rule_engine.record_event(evt)
+    if mode != "local":
+        print(f"  {BOLD}Events are now visible on your dashboard.{RESET}")
+        print(f"  Try clicking \"Kill\" on the agent to see the kill switch work!")
+        print()
 
 
 async def run_demo() -> None:
+    api_key = os.environ.get("JEPRUM_API_KEY")
     log_path = "jeprum_demo_events.jsonl"
-
-    # Clean up previous demo log
     Path(log_path).unlink(missing_ok=True)
 
-    # Create Jeprum instance with local transport
-    jp = Jeprum(transport_mode="local", log_path=log_path)
+    mode = "both" if api_key else "local"
 
-    # Create mock MCP session
+    jp = Jeprum(
+        api_key=api_key,
+        transport_mode=mode,
+        log_path=log_path,
+        cloud_endpoint=CLOUD_ENDPOINT,
+    )
+
     session = MockMCPSession()
-
-    # Monitor the session with guardrails
     agent = jp.monitor(
         session,
         agent_name="Demo Agent",
         rules={
-            "max_spend_per_day": 0.10,
+            "max_spend_per_day": 0.15,
             "blocked_tools": ["delete_*"],
-            "alert_on": ["send_*"],
+            "alert_on": ["send_*", "notify_*"],
         },
     )
 
-    cost_helper = CostAwareMCPSession(session, agent)
+    print_banner(api_key)
 
-    print_header()
-
-    passed = 0
-    warned = 0
-    blocked = 0
+    passed = warned = blocked = 0
     total_cost = 0.0
 
     for i, (tool_name, args) in enumerate(DEMO_CALLS):
         cost = TOOL_COSTS.get(tool_name, 0.01)
 
-        # Pre-check spending limit before making the call
+        # Pre-check spending limit
         from jeprum.models import AgentEvent
-        cost_check_event = AgentEvent(
+        check_evt = AgentEvent(
             agent_id=agent._config.agent_id,
             tool_name=tool_name,
             estimated_cost_usd=cost,
         )
-        spend_result = agent._rule_engine.evaluate(cost_check_event)
+        spend_result = agent._rule_engine.evaluate(check_evt)
 
         if spend_result.action in ("block", "kill"):
             blocked += 1
-            print_event(i, tool_name, "BLOCKED", 0, 0.0, spend_result.reason or "Budget exceeded")
+            print_event(i, tool_name, "BLOCKED", 0, 0, f"💰 {spend_result.reason}")
             continue
 
         try:
             result = await agent.call_tool(tool_name, args)
 
-            # Record cost after successful call
-            cost_helper.record_cost(tool_name, cost)
-            total_cost += cost
-
-            # Check if it was an alerted tool
-            alert_check = AgentEvent(
+            # Record cost
+            cost_evt = AgentEvent(
                 agent_id=agent._config.agent_id,
                 tool_name=tool_name,
+                estimated_cost_usd=cost,
             )
-            alert_result = agent._rule_engine.evaluate(alert_check)
+            agent._rule_engine.record_event(cost_evt)
+            total_cost += cost
 
-            if alert_result.action == "alert":
+            # Check alert status
+            alert_evt = AgentEvent(agent_id=agent._config.agent_id, tool_name=tool_name)
+            alert_result = agent._rule_engine.evaluate(alert_evt)
+
+            duration = random.uniform(50, 300)
+            if alert_result.action in ("alert", "warn"):
                 warned += 1
-                duration = random.uniform(50, 200)
                 print_event(i, tool_name, "WARNED", cost, duration, alert_result.reason or "")
             else:
                 passed += 1
-                duration = random.uniform(50, 200)
                 print_event(i, tool_name, "PASSED", cost, duration)
 
         except GuardrailViolation as exc:
             blocked += 1
-            print_event(i, tool_name, "BLOCKED", 0, 0.0, exc.reason)
+            print_event(i, tool_name, "BLOCKED", 0, 0, exc.reason)
 
-        except AgentKilled:
+        except (AgentKilled, AgentPaused) as exc:
             blocked += 1
-            print_event(i, tool_name, "BLOCKED", 0, 0.0, "Agent killed")
+            print_event(i, tool_name, "BLOCKED", 0, 0, type(exc).__name__)
             break
+
+    print_summary(passed, warned, blocked, total_cost, mode)
+
+    # If cloud mode, keep agent alive so user can test kill switch from dashboard
+    if api_key:
+        print(f"  {BOLD}Agent is still running — making a call every 3 seconds.{RESET}")
+        print(f"  {DIM}Press Ctrl+C to stop, or kill from the dashboard.{RESET}")
+        print()
+        try:
+            loop_idx = len(DEMO_CALLS)
+            tools = ["web_search", "calculator", "get_weather", "read_file"]
+            while True:
+                await asyncio.sleep(3)
+                tool = random.choice(tools)
+                try:
+                    await agent.call_tool(tool, {"query": "keep-alive"})
+                    print(f"  {GREEN}✅ {tool}{RESET}  {DIM}(live — kill from dashboard to stop){RESET}")
+                except (AgentKilled, AgentPaused) as exc:
+                    print(f"\n  {RED}{BOLD}🛑 Agent stopped: {type(exc).__name__}{RESET}")
+                    print(f"  {DIM}The kill switch worked! Agent received the signal from the dashboard.{RESET}")
+                    break
+                except GuardrailViolation:
+                    pass
+        except KeyboardInterrupt:
+            print(f"\n  {DIM}Stopped by user (Ctrl+C){RESET}")
 
     await agent.close()
     await jp.close_all()
-
-    print_summary(passed, warned, blocked, total_cost, log_path)
+    print()
 
 
 def main() -> None:
-    asyncio.run(run_demo())
+    try:
+        asyncio.run(run_demo())
+    except KeyboardInterrupt:
+        print(f"\n{DIM}  Exited.{RESET}")
 
 
 if __name__ == "__main__":

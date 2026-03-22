@@ -1,59 +1,86 @@
 # Jeprum
 
-**Live control room for AI agents - route, monitor, and govern AI agents before they cost you money or break things.**
+The live control room for AI agents — see everything, set rules, stop anything.
 
----
+[![PyPI](https://img.shields.io/pypi/v/jeprum)](https://pypi.org/project/jeprum/)
+[![Python](https://img.shields.io/pypi/pyversions/jeprum)](https://pypi.org/project/jeprum/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Tests](https://github.com/jeprum/jeprum/actions/workflows/ci.yml/badge.svg)](https://github.com/jeprum/jeprum/actions)
 
-## The Problem
+## What is Jeprum?
 
-As AI agents proliferate across enterprise workflows, teams are flying blind. There's no unified layer to answer basic operational questions:
+Jeprum is an open-source SDK that monitors and governs AI agents in real-time. It intercepts MCP tool calls, enforces guardrails (spending limits, tool blocking, rate limits), provides a kill switch, and ships telemetry to a cloud dashboard. Install in one command, integrate in 5 lines of code.
 
-- Which agents are running, and what are they doing?
-- How much is each agent call actually costing?
-- Why did an agent produce that output - and can we reproduce it?
-- Are agents operating within the boundaries we set?
+## Quick Start
 
-Today, every team building with agents is duct-taping together logging, cost tracking, and access controls. The result: runaway costs, opaque failures, and zero governance - until something breaks in production.
+```bash
+pip install jeprum
+```
 
-## What Jeprum Is
+```python
+from jeprum import Jeprum
 
-Jeprum is infrastructure that AI agents operate *through*, not a monitoring layer bolted on top.
+jp = Jeprum(api_key="jp_live_xxx", transport_mode="cloud")
+monitored = jp.monitor(my_mcp_session, rules={
+    "max_spend_per_day": 10.0,
+    "blocked_tools": ["delete_*"]
+})
+result = await monitored.call_tool("search", {"query": "test"})
+```
 
-Think of it as a control plane - the same way Kubernetes orchestrates containers or Envoy manages service mesh traffic, Jeprum sits in the agent execution path to provide:
+## Features
 
-- **Routing & Orchestration** - Direct agent traffic through policy-aware pathways
-- **Cost Controls** - Set budgets, track spend per agent/task/team, kill runaway calls before they drain your API bill
-- **Observability** - Full trace of agent decisions, tool calls, and outputs with reproducible debugging
-- **Governance & Policy Enforcement** - Define what agents can and cannot do, enforced at the infrastructure layer
+- **Real-time monitoring** — every tool call captured with duration, cost, and I/O
+- **Guardrails** — spending limits, tool blocking, rate limiting, alert patterns
+- **Kill switch** — stop any agent remotely from the dashboard
+- **Cloud dashboard** — live event timeline, cost tracking, agent management
+- **MCP-native** — wraps ClientSession with zero agent code changes
+- **Non-blocking** — telemetry shipping never slows your agent
+- **Open source** — Apache 2.0
 
-## Architecture Direction
+## How It Works
 
-We're currently evaluating the right enforcement layer - the core design question is where Jeprum intercepts agent execution:
+```
+Agent → Jeprum SDK (intercept + guardrails) → MCP Server → Tool
+               ↓
+        Jeprum Cloud (dashboard, kill switch, audit trail)
+```
 
-| Approach | Tradeoff |
-|---|---|
-| **SDK-level integration** | Deep control, tighter coupling |
-| **Proxy / Gateway** | Adoption-friendly, protocol-agnostic |
-| **Protocol-native hooks (MCP, A2A)** | Standards-aligned, dependent on ecosystem adoption |
+The SDK wraps your MCP session. Every `call_tool()` is intercepted: guardrails are checked synchronously (before execution), events are shipped asynchronously (after execution). Your agent code doesn't change.
 
-The answer likely involves a combination. We're studying the emerging agent protocol landscape (MCP, A2A) to make this decision well rather than fast.
+## Configuration
 
-## Why Now
+```python
+rules = {
+    "max_spend_per_day": 10.0,
+    "blocked_tools": ["delete_*", "drop_*"],
+    "alert_on": ["payment.*", "transfer.*"],
+    "rate_limit": {"max_events": 100, "period_seconds": 60}
+}
+```
 
-- Agent frameworks (LangChain, CrewAI, AutoGen) are shipping fast - but none own the control layer
-- Enterprises are moving agents into production without operational infrastructure
-- Agent-to-agent communication protocols (MCP, A2A) are creating a standards window where the right infrastructure gets locked in early
-- The cost of *not* governing agents compounds - every month without controls is budget risk and compliance exposure
+## Cloud Dashboard
 
-## Current Stage
+Sign up at [jeprum.com](https://jeprum.com) to get an API key. The dashboard provides:
 
-🔧 **Pre-build** - Architecture design and protocol research phase. Actively evaluating technical approaches before writing code that locks in the wrong abstraction.
+- Live event timeline with guardrail status
+- Agent list with cost and status tracking
+- Kill / pause / resume controls
+- Cost-over-time charts
 
-## Background
+## Documentation
 
-Built by [Jithendra Puppala](https://linkedin.com/in/jithendra-siddartha), MS CS @ NYU (2027), previously Data Scientist at Reliance Jio building production ML systems serving 450M+ users.
+- [Getting Started](docs/getting-started.md)
+- [Guardrail Rules](docs/rules.md)
+- [API Reference](docs/api-reference.md)
+- [Contributing](CONTRIBUTING.md)
 
-## Get in Touch
+## Contributing
 
-- **Email:** jithendra.mail.me@gmail.com
-- **LinkedIn:** [linkedin.com/in/jithendra-siddartha](https://linkedin.com/in/jithendra-siddartha)
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE) for details.
+
+Built by [Jithendra Siddartha](https://linkedin.com/in/jithendra-siddartha), MS CS @ NYU Tandon.

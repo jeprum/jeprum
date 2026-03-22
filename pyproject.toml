@@ -5,15 +5,33 @@ description = "The live control room for AI agents — see everything, set rules
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
+authors = [{name = "Jithendra Siddartha"}]
+keywords = ["ai", "agents", "monitoring", "governance", "mcp", "guardrails", "observability", "control-plane"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.0",
     "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
-mcp = [
-    "mcp>=1.0",
-]
+mcp = ["mcp>=1.0"]
+
+[project.urls]
+Homepage = "https://jeprum.com"
+Repository = "https://github.com/jeprum/jeprum"
+Documentation = "https://github.com/jeprum/jeprum/tree/main/docs"
+Issues = "https://github.com/jeprum/jeprum/issues"
 
 [build-system]
 requires = ["hatchling"]
