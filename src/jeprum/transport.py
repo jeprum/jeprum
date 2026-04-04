@@ -86,13 +86,20 @@ class CloudTransport:
         self._client: httpx.AsyncClient | None = None
         self._flush_task: asyncio.Task[None] | None = None
         self._poll_task: asyncio.Task[None] | None = None
+        self._rules_task: asyncio.Task[None] | None = None
         self._closed = False
         self._remote_status: str = "active"
+        self._remote_rules: list[dict[str, Any]] = []
 
     @property
     def remote_status(self) -> str:
         """The latest status polled from the cloud (active/paused/killed)."""
         return self._remote_status
+
+    @property
+    def remote_rules(self) -> list[dict[str, Any]]:
+        """Rules fetched from the cloud API (synced periodically)."""
+        return self._remote_rules
 
     async def _ensure_started(self) -> None:
         """Lazily start the HTTP client, flush task, and poll task."""
@@ -108,6 +115,8 @@ class CloudTransport:
             self._flush_task = asyncio.create_task(self._flush_loop())
         if self._poll_task is None and self._agent_id:
             self._poll_task = asyncio.create_task(self._poll_status_loop())
+        if self._rules_task is None:
+            self._rules_task = asyncio.create_task(self._poll_rules_loop())
 
     async def ship(self, event: AgentEvent) -> None:
         """Add an event to the internal queue for batched shipping."""
@@ -201,10 +210,44 @@ class CloudTransport:
         except Exception as exc:
             logger.warning("Failed to poll agent status: %s", exc)
 
+    async def _poll_rules_loop(self) -> None:
+        """Background task that periodically fetches rules from the cloud."""
+        while not self._closed:
+            try:
+                await asyncio.sleep(self._poll_interval)
+                await self._poll_rules()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning("CloudTransport rules poll error: %s", exc)
+
+    async def _poll_rules(self) -> None:
+        """Fetch rules from the cloud API. Fail-open on errors."""
+        if self._client is None:
+            return
+        try:
+            params = {}
+            if self._agent_id:
+                params["agent_id"] = self._agent_id
+            response = await self._client.get(
+                f"{self._endpoint}/api/v1/rules",
+                params=params,
+            )
+            if response.status_code == 200:
+                rules = response.json()
+                if rules != self._remote_rules:
+                    logger.info(
+                        "Remote rules updated: %d rules fetched",
+                        len(rules),
+                    )
+                    self._remote_rules = rules
+        except Exception as exc:
+            logger.warning("Failed to poll rules: %s", exc)
+
     async def close(self) -> None:
         """Flush remaining events and shut down."""
         self._closed = True
-        for task in (self._flush_task, self._poll_task):
+        for task in (self._flush_task, self._poll_task, self._rules_task):
             if task is not None:
                 task.cancel()
                 try:

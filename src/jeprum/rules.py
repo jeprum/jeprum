@@ -35,11 +35,37 @@ class RuleEngine:
 
     def __init__(self, rules: list[Rule] | None = None) -> None:
         self._rules: list[Rule] = rules or []
+        self._remote_rules: list[Rule] = []
         self._daily_spend: dict[str, float] = {}
         self._daily_event_count: dict[str, int] = {}
         self._last_reset_date: date = datetime.now(timezone.utc).date()
         # rate_limit tracking: agent_id -> deque of event timestamps
         self._rate_limit_windows: dict[str, deque[float]] = {}
+
+    def set_remote_rules(self, raw_rules: list[dict[str, Any]]) -> None:
+        """Update remote rules from cloud API response.
+
+        Parses JSON dicts into Rule objects, skipping any that fail validation.
+        These are merged with local rules during evaluation.
+        """
+        parsed: list[Rule] = []
+        for raw in raw_rules:
+            try:
+                parsed.append(Rule(
+                    name=raw.get("name", "remote_rule"),
+                    rule_type=raw.get("rule_type", "alert_on"),
+                    config=raw.get("config", {}),
+                    action=raw.get("action", "block"),
+                    is_active=raw.get("is_active", True),
+                ))
+            except Exception as exc:
+                logger.warning("Skipping invalid remote rule: %s", exc)
+        self._remote_rules = parsed
+
+    @property
+    def all_rules(self) -> list[Rule]:
+        """Return combined local + remote rules."""
+        return self._rules + self._remote_rules
 
     def evaluate(self, event: AgentEvent) -> RuleEvalResult:
         """Evaluate all active rules against an event.
@@ -55,7 +81,7 @@ class RuleEngine:
             reason=None,
         )
 
-        for rule in self._rules:
+        for rule in self.all_rules:
             if not rule.is_active:
                 continue
 

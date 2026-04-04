@@ -63,8 +63,9 @@ class JeprumInterceptor:
         if not self._enabled:
             return await self._session.call_tool(name, arguments)
 
-        # 1. Check kill/pause status (local + remote)
+        # 1. Sync remote status + rules from cloud
         self._sync_remote_status()
+        self._sync_remote_rules()
         if self._status.status == "killed":
             raise AgentKilled(self._config.agent_id)
         if self._status.status == "paused":
@@ -175,6 +176,18 @@ class JeprumInterceptor:
                     self._config.agent_id,
                     remote,
                 )
+
+    def _sync_remote_rules(self) -> None:
+        """Sync remote rules from cloud transport into the rule engine."""
+        if isinstance(self._transport, (CloudTransport, ComboTransport)):
+            transport = (
+                self._transport._cloud
+                if isinstance(self._transport, ComboTransport)
+                else self._transport
+            )
+            remote = transport.remote_rules
+            if remote:
+                self._rule_engine.set_remote_rules(remote)
 
     @staticmethod
     def _safe_serialize(obj: Any) -> Any:
